@@ -94,8 +94,10 @@ func (c *Client) List(opts ListOptions) ([]*Item, error) {
 		}
 
 		result = append(result, items...)
-		hasMore = list.Get("has_more").Int() != 0
 		page++
+		if len(items) < 100 {
+			break
+		}
 	}
 
 	return result, nil
