@@ -281,6 +281,7 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 		}
 		chunkSize := int64(math.Ceil(float64(fileSize) / float64(numChunks)))
 		for start := int64(0); start < fileSize; start += chunkSize {
+			numChunks := numChunks
 			start := start
 			end := start + chunkSize - 1
 			if end >= fileSize {
@@ -290,25 +291,28 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 			barPriority := fileCnt*1000 + chunkNo
 
 			dleg.Go(func() error {
-				chunkBar, _ := p.Add(end-start+1,
-					// mpb.BarStyle().Build(),
-					mpb.BarStyle().Lbound("▕").Filler("▒").Tip("░").Padding(" ").Rbound("▏").Build(),
-					// mpb.NopStyle().Build(),
-					mpb.BarPriority(barPriority),
-					mpb.BarRemoveOnComplete(),
-					mpb.PrependDecorators(
-						decor.Name("\033[2m"),
-						decor.Name("", decor.WCSyncSpaceR),
-						decor.Name(fmt.Sprintf("  Chunk #%d", chunkNo), decor.WCSyncSpaceR),
-						decor.NewPercentage("%.0f", decor.WCSyncSpace),
-						decor.Name(" ", decor.WCSyncWidthR),
-					),
-					mpb.AppendDecorators(
-						decor.CountersKibiByte("%.2f / %.2f ", decor.WCSyncSpace),
-						decor.AverageSpeed(decor.SizeB1024(0), "% .1f ", decor.WCSyncSpace),
-						decor.Name("\033[0m"),
-					),
-				)
+				var chunkBar *mpb.Bar = nil
+				if numChunks > 1 {
+					chunkBar, _ = p.Add(end-start+1,
+						// mpb.BarStyle().Build(),
+						mpb.BarStyle().Lbound("▕").Filler("▒").Tip("░").Padding(" ").Rbound("▏").Build(),
+						// mpb.NopStyle().Build(),
+						mpb.BarPriority(barPriority),
+						mpb.BarRemoveOnComplete(),
+						mpb.PrependDecorators(
+							decor.Name("\033[2m"),
+							decor.Name("", decor.WCSyncSpaceR),
+							decor.Name(fmt.Sprintf("  Chunk #%d", chunkNo), decor.WCSyncSpaceR),
+							decor.NewPercentage("%.0f", decor.WCSyncSpace),
+							decor.Name(" ", decor.WCSyncWidthR),
+						),
+						mpb.AppendDecorators(
+							decor.CountersKibiByte("%.2f / %.2f ", decor.WCSyncSpace),
+							decor.AverageSpeed(decor.SizeB1024(0), "% .1f ", decor.WCSyncSpace),
+							decor.Name("\033[0m"),
+						),
+					)
+				}
 
 				req, err := http.NewRequest("GET", dLink.Dlink, nil)
 				if err != nil {
