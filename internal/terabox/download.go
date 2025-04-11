@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -197,6 +198,9 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 	if downloadFiles == nil && receiver == nil {
 		return fmt.Errorf("must specify one of downloadFiles or receiver")
 	}
+
+	defer log.SetOutput(os.Stderr)
+	log.SetOutput(io.Discard)
 
 	p := mpb.NewWithContext(ctx,
 		mpb.WithOutput(os.Stderr),
