@@ -43,7 +43,10 @@ var putCmd = &cli.Command{
 			Usage:   "Split size (1k = 1024, 1M = 1048576)",
 			Value:   "50M",
 			Validator: func(arg string) error {
-				_, err := util.ParseChunkSize(arg)
+				size, err := util.ParseChunkSize(arg)
+				if size < 1024*1024 {
+					return fmt.Errorf("Split size must be greater than 1M")
+				}
 				return err
 			},
 		},
