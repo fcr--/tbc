@@ -188,143 +188,162 @@ func (pw *progressWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (c *Client) Download(remotePath, outputDir string, opts *DownloadOptions) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+type DownloadFile struct {
+	RemotePath string
+	LocalDir   string
+}
 
-	dLink, err := c.GetDownloadLink(remotePath)
-	if err != nil {
-		return err
+func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, receiver <-chan DownloadFile, opts *DownloadOptions) error {
+	if downloadFiles == nil && receiver == nil {
+		return fmt.Errorf("must specify one of downloadFiles or receiver")
 	}
-
-	dirInfo, err := os.Stat(outputDir)
-	if err != nil {
-		return err
-	}
-	if !dirInfo.IsDir() {
-		return fmt.Errorf("Specified output directory is not a directory")
-	}
-	fileSize := int64(dLink.FileSize)
-	fileName := dLink.FileName
-	outputPath := path.Join(outputDir, fileName)
-
-	file, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	downloadChunkSize = opts.DownloadChunkSize
-	downloadConcurrency = opts.MaxConcurrency
 
 	p := mpb.NewWithContext(ctx,
 		mpb.WithOutput(os.Stderr),
 		mpb.WithWidth(25),
 		mpb.WithRefreshRate(180*time.Millisecond),
 	)
-	bar, _ := p.Add(1,
-		mpb.NopStyle().Build(),
-		mpb.BarRemoveOnComplete(),
-		mpb.PrependDecorators(
-			decor.Name("Pre-allocating..."),
-			decor.OnComplete(decor.Spinner(nil), "Done"),
-		),
-	)
-	if err := file.Truncate(fileSize); err != nil {
-		return err
-	}
-	bar.IncrBy(1)
 
-	totalBar, _ := p.Add(fileSize,
-		mpb.BarStyle().Lbound("▕").Filler("█").Tip("▌").Padding(" ").Rbound("▏").Build(),
-		mpb.BarPriority(0),
-		mpb.PrependDecorators(
-			decor.OnCompleteOrOnAbort(decor.Spinner(nil), ""),
-			decor.Name(fmt.Sprintf(" %s  ", fileName)),
-			decor.NewPercentage("%.1f"),
-		),
-		mpb.AppendDecorators(
-			decor.CountersKibiByte("%.2f / %.2f  "),
-			decor.AverageSpeed(decor.SizeB1024(0), "% .2f  "),
-			decor.Name("  ETA "),
-			decor.AverageETA(decor.ET_STYLE_GO),
-		),
-	)
+	downloadChunkSize = opts.DownloadChunkSize
+	downloadConcurrency = opts.MaxConcurrency
 
-	sem := make(chan struct{}, downloadConcurrency)
-	g, ctx := errgroup.WithContext(ctx)
+	dleg, dlctx := errgroup.WithContext(ctx)
+	dleg.SetLimit(int(downloadConcurrency))
 
-	chunkCount := 0
-	var numChunks int64 = 1
-	if downloadConcurrency > 1 {
-		numChunks = (fileSize + downloadChunkSize - 1) / downloadChunkSize
-	}
-	chunkSize := int64(math.Ceil(float64(fileSize) / float64(numChunks)))
-	for start := int64(0); start < fileSize; start += chunkSize {
-		start := start
-		end := start + chunkSize - 1
-		if end >= fileSize {
-			end = fileSize - 1
+	recvChan := receiver
+	if recvChan == nil {
+		listChan := make(chan DownloadFile, len(downloadFiles))
+		for _, downloadFile := range downloadFiles {
+			listChan <- downloadFile
 		}
-		chunkNo := chunkCount + 1
-
-		sem <- struct{}{}
-		g.Go(func() error {
-			defer func() { <-sem }()
-
-			chunkBar, _ := p.Add(end-start+1,
-				mpb.BarStyle().Lbound("▕").Filler("▒").Tip("░").Padding(" ").Rbound("▏").Build(),
-				mpb.BarRemoveOnComplete(),
-				mpb.BarPriority(chunkNo+1),
-				mpb.PrependDecorators(
-					decor.Name(fmt.Sprintf("Chunk #%d ", chunkNo), decor.WCSyncSpaceR),
-					decor.CountersKibiByte("%.2f / %.2f", decor.WCSyncSpace),
-					decor.NewPercentage("  %.0f", decor.WCSyncSpace),
-				),
-				mpb.AppendDecorators(
-					decor.AverageSpeed(decor.SizeB1024(0), "% .1f", decor.WCSyncSpace),
-				),
-			)
-
-			req, err := http.NewRequest("GET", dLink.Dlink, nil)
-			if err != nil {
-				return fmt.Errorf("Error creating request: %w", err)
-			}
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-			req.Header.Set("User-Agent", userAgent)
-			req.Header.Set("Referer", baseUrl)
-			for _, cookie := range c.cookies {
-				req.AddCookie(cookie)
-			}
-
-			resp, err := http.DefaultClient.Do(req.WithContext(ctx))
-			if err != nil {
-				return fmt.Errorf("Failed to send request: %w", err)
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-				return fmt.Errorf("Invalid status code: %d", resp.StatusCode)
-			}
-
-			pw := &progressWriter{
-				writer:   &offsetWriter{file: file, offset: start},
-				totalBar: totalBar,
-				chunkBar: chunkBar,
-			}
-
-			if _, err := io.Copy(pw, resp.Body); err != nil {
-				return fmt.Errorf("Failed to write response: %w", err)
-			}
-
-			return nil
-		})
-		chunkCount++
+		recvChan = listChan
 	}
 
-	if err := g.Wait(); err != nil {
-		cancel()
-		os.Remove(outputPath)
+	fileCnt := 0
+	for downloadFile := range recvChan {
+		remotePath := downloadFile.RemotePath
+		outputDir := downloadFile.LocalDir
+
+		dLink, err := c.GetDownloadLink(remotePath)
+		if err != nil {
+			return err
+		}
+
+		dirInfo, err := os.Stat(outputDir)
+		if err != nil {
+			return err
+		}
+		if !dirInfo.IsDir() {
+			return fmt.Errorf("Specified output directory is not a directory")
+		}
+		fileSize := int64(dLink.FileSize)
+		fileName := dLink.FileName
+		outputPath := path.Join(outputDir, fileName)
+
+		file, err := os.Create(outputPath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		if fileSize > downloadChunkSize {
+			if err := file.Truncate(fileSize); err != nil {
+				return err
+			}
+		}
+
+		fileCnt += 1
+		totalBar, _ := p.Add(fileSize,
+			mpb.BarStyle().Lbound("▕").Filler("█").Tip("▌").Padding(" ").Rbound("▏").Build(),
+			mpb.BarPriority(fileCnt*1000),
+			mpb.PrependDecorators(
+				decor.OnCompleteOrOnAbort(decor.Spinner(nil, decor.WCSyncSpaceR), "✓"),
+				decor.Name(fmt.Sprintf("%s ", fileName), decor.WCSyncSpaceR),
+				decor.NewPercentage("%.1f", decor.WCSyncSpace),
+				decor.Name(" ", decor.WCSyncWidthR),
+			),
+			mpb.AppendDecorators(
+				decor.CountersKibiByte("%.2f / %.2f ", decor.WCSyncSpace),
+				decor.AverageSpeed(decor.SizeB1024(0), "% .2f ", decor.WCSyncSpace),
+				decor.OnComplete(decor.Name("ETA", decor.WCSyncSpace), ""),
+				decor.OnComplete(decor.AverageETA(decor.ET_STYLE_GO, decor.WCSyncSpace), ""),
+			),
+		)
+
+		chunkCount := 0
+		var numChunks int64 = 1
+		if downloadConcurrency > 1 {
+			numChunks = (fileSize + downloadChunkSize - 1) / downloadChunkSize
+		}
+		chunkSize := int64(math.Ceil(float64(fileSize) / float64(numChunks)))
+		for start := int64(0); start < fileSize; start += chunkSize {
+			start := start
+			end := start + chunkSize - 1
+			if end >= fileSize {
+				end = fileSize - 1
+			}
+			chunkNo := chunkCount + 1
+			barPriority := fileCnt*1000 + chunkNo
+
+			dleg.Go(func() error {
+				chunkBar, _ := p.Add(end-start+1,
+					// mpb.BarStyle().Build(),
+					mpb.BarStyle().Lbound("▕").Filler("▒").Tip("░").Padding(" ").Rbound("▏").Build(),
+					// mpb.NopStyle().Build(),
+					mpb.BarPriority(barPriority),
+					mpb.BarRemoveOnComplete(),
+					mpb.PrependDecorators(
+						decor.Name("\033[2m"),
+						decor.Name("", decor.WCSyncSpaceR),
+						decor.Name(fmt.Sprintf("  Chunk #%d", chunkNo), decor.WCSyncSpaceR),
+						decor.NewPercentage("%.0f", decor.WCSyncSpace),
+						decor.Name(" ", decor.WCSyncWidthR),
+					),
+					mpb.AppendDecorators(
+						decor.CountersKibiByte("%.2f / %.2f ", decor.WCSyncSpace),
+						decor.AverageSpeed(decor.SizeB1024(0), "% .1f ", decor.WCSyncSpace),
+						decor.Name("\033[0m"),
+					),
+				)
+
+				req, err := http.NewRequest("GET", dLink.Dlink, nil)
+				if err != nil {
+					return fmt.Errorf("Error creating request: %w", err)
+				}
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+				req.Header.Set("User-Agent", userAgent)
+				req.Header.Set("Referer", baseUrl)
+				for _, cookie := range c.cookies {
+					req.AddCookie(cookie)
+				}
+
+				resp, err := http.DefaultClient.Do(req.WithContext(dlctx))
+				if err != nil {
+					return fmt.Errorf("Failed to send request: %w", err)
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+					return fmt.Errorf("Invalid status code: %d", resp.StatusCode)
+				}
+
+				pw := &progressWriter{
+					writer:   &offsetWriter{file: file, offset: start},
+					totalBar: totalBar,
+					chunkBar: chunkBar,
+				}
+
+				if _, err := io.Copy(pw, resp.Body); err != nil {
+					return fmt.Errorf("Failed to write response: %w", err)
+				}
+
+				return nil
+			})
+			chunkCount++
+		}
+	}
+
+	if err := dleg.Wait(); err != nil {
 		return err
 	}
 

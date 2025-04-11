@@ -3,8 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
-	"path"
 	"tbc/internal/runner"
 	"tbc/internal/terabox"
 	"tbc/internal/util"
@@ -77,56 +75,5 @@ func getAction(ctx context.Context, cmd *cli.Command) error {
 		MaxConcurrency:    cmd.Int("split"),
 	}
 
-	return recursiveDownload(ctx, client, cmd.Args().Slice(), destDir, &opts)
-}
-
-func recursiveDownload(
-	ctx context.Context,
-	client *terabox.Client,
-	remotePaths []string,
-	destDir string,
-	opts *terabox.DownloadOptions,
-) error {
-	files, dirs := runner.List(ctx, client, remotePaths, terabox.OrderByName, false)
-
-	if len(files.GetItems()) == 0 && len(dirs) == 0 {
-		return fmt.Errorf("%s: No valid file or directory specified", getCmdName)
-	}
-
-	for _, file := range files.GetItems() {
-		err := client.Download(file.Path, destDir, opts)
-		if err != nil {
-			return err
-		}
-	}
-
-	for _, dir := range dirs {
-		baseDir := path.Join(destDir, path.Base(path.Clean(dir.OriginalArg)))
-		if stat, err := os.Stat(baseDir); err != nil {
-			if err := os.Mkdir(baseDir, os.ModePerm); err != nil {
-				return fmt.Errorf("%s: Failed to create directory", getCmdName)
-			}
-		} else if !stat.IsDir() {
-			return fmt.Errorf("%s: \"%s\" is not directory", getCmdName, dir.OriginalArg)
-		}
-
-		var innerDirs []string
-		for _, item := range dir.GetItems() {
-			if item.IsDir == 0 {
-				err := client.Download(item.Path, baseDir, opts)
-				if err != nil {
-					return err
-				}
-			} else {
-				innerDirs = append(innerDirs, item.Path)
-			}
-		}
-
-		if len(innerDirs) > 0 {
-			if err := recursiveDownload(ctx, client, innerDirs, baseDir, opts); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return runner.Download(ctx, client, cmd.Args().Slice(), destDir, &opts)
 }
