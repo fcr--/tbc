@@ -20,11 +20,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var (
-	downloadChunkSize   int64 = 50 * 1024 * 1024
-	downloadConcurrency int64 = 5
-)
-
 type DownloadOptions struct {
 	DownloadChunkSize int64
 	MaxConcurrency    int64
@@ -68,7 +63,7 @@ func (c *Client) getHomeInfo() (*homeInfo, error) {
 		}).
 		Get("/api/home/info"))
 	if err != nil {
-		return nil, fmt.Errorf("Error getting list: %v", err)
+		return nil, fmt.Errorf("failed to get list: %w", err)
 	}
 
 	var info homeInfo
@@ -80,7 +75,7 @@ func (c *Client) getHomeInfo() (*homeInfo, error) {
 func (c *Client) GetDownloadLink(remotePath string) (*DownloadLink, error) {
 	remotePath = util.GetAbsPath(c.cwd, remotePath)
 	if remotePath == "/" {
-		return nil, fmt.Errorf("Cannot download root directory")
+		return nil, fmt.Errorf("cannot download root directory")
 	}
 
 	info, err := c.getHomeInfo()
@@ -105,7 +100,7 @@ func (c *Client) GetDownloadLink(remotePath string) (*DownloadLink, error) {
 	}
 
 	if len(files) == 0 {
-		return nil, fmt.Errorf("No files found")
+		return nil, fmt.Errorf("no files found")
 	}
 
 	var fileId uint64
@@ -134,11 +129,11 @@ func (c *Client) GetDownloadLink(remotePath string) (*DownloadLink, error) {
 	json.Unmarshal(body, &dInfo)
 
 	if dInfo.Errno != 0 {
-		return nil, fmt.Errorf("Error getting download link")
+		return nil, fmt.Errorf("failed to get download link (errno: %d)", dInfo.Errno)
 	}
 
 	if len(dInfo.Dlink) == 0 {
-		return nil, fmt.Errorf("No download link found")
+		return nil, fmt.Errorf("no download link found in response")
 	}
 
 	fileSize := dInfo.FileInfo.Size
@@ -208,11 +203,8 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 		mpb.WithRefreshRate(180*time.Millisecond),
 	)
 
-	downloadChunkSize = opts.DownloadChunkSize
-	downloadConcurrency = opts.MaxConcurrency
-
-	dleg, dlctx := errgroup.WithContext(ctx)
-	dleg.SetLimit(int(downloadConcurrency))
+	downloadChunkSize := opts.DownloadChunkSize
+	downloadConcurrency := opts.MaxConcurrency
 
 	recvChan := receiver
 	if recvChan == nil {
@@ -220,7 +212,17 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 		for _, downloadFile := range downloadFiles {
 			listChan <- downloadFile
 		}
+		close(listChan)
 		recvChan = listChan
+	}
+
+	// Create a custom HTTP client for downloading chunks
+	// Disable keep-alives to prevent "Unsolicited response" errors on idle connections
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:             http.ProxyFromEnvironment,
+			DisableKeepAlives: true,
+		},
 	}
 
 	fileCnt := 0
@@ -258,7 +260,7 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 
 		fileCnt += 1
 		totalBar, _ := p.Add(fileSize,
-			mpb.BarStyle().Lbound("▕").Filler("█").Tip("▌").Padding(" ").Rbound("▏").Build(),
+			mpb.BarStyle().Lbound("[").Filler("=").Tip(">").Padding("-").Rbound("]").Build(),
 			mpb.BarPriority(fileCnt*1000),
 			mpb.PrependDecorators(
 				decor.OnCompleteOrOnAbort(decor.Spinner(nil, decor.WCSyncSpaceR), "✓"),
@@ -280,8 +282,11 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 			numChunks = (fileSize + downloadChunkSize - 1) / downloadChunkSize
 		}
 		chunkSize := int64(math.Ceil(float64(fileSize) / float64(numChunks)))
+
+		sem := make(chan struct{}, downloadConcurrency)
+		g, ctx := errgroup.WithContext(ctx)
+
 		for start := int64(0); start < fileSize; start += chunkSize {
-			numChunks := numChunks
 			start := start
 			end := start + chunkSize - 1
 			if end >= fileSize {
@@ -290,13 +295,14 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 			chunkNo := chunkCount + 1
 			barPriority := fileCnt*1000 + chunkNo
 
-			dleg.Go(func() error {
+			sem <- struct{}{}
+			g.Go(func() error {
+				defer func() { <-sem }()
+
 				var chunkBar *mpb.Bar = nil
 				if numChunks > 1 {
 					chunkBar, _ = p.Add(end-start+1,
-						// mpb.BarStyle().Build(),
-						mpb.BarStyle().Lbound("▕").Filler("▒").Tip("░").Padding(" ").Rbound("▏").Build(),
-						// mpb.NopStyle().Build(),
+						mpb.BarStyle().Lbound("[").Filler("=").Tip(">").Padding("-").Rbound("]").Build(),
 						mpb.BarPriority(barPriority),
 						mpb.BarRemoveOnComplete(),
 						mpb.PrependDecorators(
@@ -321,11 +327,12 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 				req.Header.Set("User-Agent", userAgent)
 				req.Header.Set("Referer", baseUrl)
+				req.Close = true // Ensure connection is closed
 				for _, cookie := range c.cookies {
 					req.AddCookie(cookie)
 				}
 
-				resp, err := http.DefaultClient.Do(req.WithContext(dlctx))
+				resp, err := httpClient.Do(req.WithContext(ctx))
 				if err != nil {
 					return fmt.Errorf("Failed to send request: %w", err)
 				}
@@ -349,10 +356,10 @@ func (c *Client) Download(ctx context.Context, downloadFiles []DownloadFile, rec
 			})
 			chunkCount++
 		}
-	}
 
-	if err := dleg.Wait(); err != nil {
-		return err
+		if err := g.Wait(); err != nil {
+			return err
+		}
 	}
 
 	p.Wait()

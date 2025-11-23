@@ -26,13 +26,18 @@ type Client struct {
 	cwd      string
 }
 
-func NewClient(cookieStr string) (*Client, error) {
+func NewClient(cookieStr string, httpClient *http.Client) (*Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("Error creating cookie jar: %w", err)
 	}
 
-	restyClient := resty.New()
+	var restyClient *resty.Client
+	if httpClient != nil {
+		restyClient = resty.NewWithClient(httpClient)
+	} else {
+		restyClient = resty.New()
+	}
 	restyClient.SetCookieJar(jar)
 	restyClient.SetHeader("User-Agent", userAgent)
 	restyClient.SetHeader("Referer", baseUrl+"/")
@@ -71,7 +76,7 @@ func NewClient(cookieStr string) (*Client, error) {
 
 	c.jsToken, c.bdsToken, err = c.getToken()
 	if err != nil {
-		return nil, fmt.Errorf("Cannot obtain tokens: %w", err)
+		return nil, fmt.Errorf("failed to obtain authentication tokens: %w", err)
 	}
 
 	return c, nil

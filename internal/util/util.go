@@ -41,7 +41,7 @@ func FindFilesRecursive(rootPath string) ([]string, error) {
 
 func GetResponse(resp *resty.Response, err error) ([]byte, error) {
 	if err != nil {
-		return nil, fmt.Errorf("error sending request: %v", err)
+		return nil, fmt.Errorf("error sending request: %w", err)
 	}
 
 	if !resp.IsSuccess() {

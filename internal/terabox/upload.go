@@ -25,12 +25,6 @@ import (
 	"github.com/vbauerster/mpb/v8/decor"
 )
 
-var (
-	uploadChunkSize int64 = 50 * 1024 * 1024  // 50MB
-	splitThreshold  int64 = 100 * 1024 * 1024 // 100MB
-	maxConcurrency  int64 = 5
-)
-
 type UploadOptions struct {
 	UploadChunkSize int64
 	SplitThreshold  int64
@@ -66,7 +60,7 @@ type uploadResult struct {
 	Error    error
 }
 
-func (c *Client) preCreate(localPath, destination string) (*preCreateResult, error) {
+func (c *Client) preCreate(localPath, destination string, opts *UploadOptions) (*preCreateResult, error) {
 	// obtain file info
 	fileInfo, err := os.Stat(localPath)
 	if err != nil {
@@ -82,8 +76,8 @@ func (c *Client) preCreate(localPath, destination string) (*preCreateResult, err
 	var blockList []string
 
 	// if file is large enough, split it
-	if fileSize >= splitThreshold {
-		numChunks = (fileSize + uploadChunkSize - 1) / uploadChunkSize
+	if fileSize >= opts.SplitThreshold {
+		numChunks = (fileSize + opts.UploadChunkSize - 1) / opts.UploadChunkSize
 	}
 	filePieces = make([]*filePiece, numChunks)
 	blockList = make([]string, numChunks)
@@ -124,9 +118,10 @@ func (c *Client) preCreate(localPath, destination string) (*preCreateResult, err
 		Post("/api/precreate"))
 
 	if err != nil {
-		return nil, fmt.Errorf("Error getting precreate response: %v", err)
-	} else if gjson.GetBytes(body, "errno").Int() != 0 {
-		return nil, fmt.Errorf("Error precreate failed: %v", err)
+		return nil, fmt.Errorf("failed to get precreate response: %w", err)
+	}
+	if errno := gjson.GetBytes(body, "errno").Int(); errno != 0 {
+		return nil, fmt.Errorf("precreate failed with errno: %d", errno)
 	}
 
 	uploadId := gjson.GetBytes(body, "uploadid").String()
@@ -155,7 +150,7 @@ func (c *Client) uploadChunk(ctx context.Context, pb *mpb.Progress, uploadInfo *
 
 	file, err := os.Open(uploadInfo.LocalFilePath)
 	if err != nil {
-		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: err}
+		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: fmt.Errorf("failed to open file: %w", err)}
 		return
 	}
 	defer file.Close()
@@ -219,8 +214,7 @@ func (c *Client) uploadChunk(ctx context.Context, pb *mpb.Progress, uploadInfo *
 
 	u, err := url.Parse(uploadEndpoint)
 	if err != nil {
-		fmt.Println("Error parsing url:", err.Error())
-		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: err}
+		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: fmt.Errorf("error parsing url: %w", err)}
 		return
 	}
 
@@ -235,8 +229,7 @@ func (c *Client) uploadChunk(ctx context.Context, pb *mpb.Progress, uploadInfo *
 
 	req, err := http.NewRequest("POST", u.String(), pipeReader)
 	if err != nil {
-		fmt.Println("Error creating request:", err.Error())
-		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: err}
+		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: fmt.Errorf("error creating request: %w", err)}
 		return
 	}
 
@@ -252,16 +245,14 @@ func (c *Client) uploadChunk(ctx context.Context, pb *mpb.Progress, uploadInfo *
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Println("Error uploading part:", err.Error())
-		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: err}
+		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: fmt.Errorf("error uploading part: %w", err)}
 		return
 	}
 	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		fmt.Println("Error reading response:", err.Error())
-		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: err}
+		resultChan <- uploadResult{Index: uploadInfo.Index, UploadId: uploadInfo.UploadId, Error: fmt.Errorf("error reading response: %w", err)}
 		return
 	}
 	uploadedHash := gjson.GetBytes(body, "md5").String()
@@ -331,10 +322,6 @@ func (c *Client) Upload(uploadFiles []UploadFile, opts *UploadOptions) error {
 		return fmt.Errorf("No files found to upload.\n")
 	}
 
-	uploadChunkSize = opts.UploadChunkSize
-	splitThreshold = opts.SplitThreshold
-	maxConcurrency = opts.MaxConcurrency
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -349,7 +336,7 @@ func (c *Client) Upload(uploadFiles []UploadFile, opts *UploadOptions) error {
 	pieceChan := make(chan *uploadInfo)
 
 	// Launch goroutines for uploading each chunk
-	for range maxConcurrency {
+	for range opts.MaxConcurrency {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -361,7 +348,7 @@ func (c *Client) Upload(uploadFiles []UploadFile, opts *UploadOptions) error {
 
 	for i, uploadFile := range uploadFiles {
 		destPath := util.GetAbsPath(c.cwd, path.Join(uploadFile.RemoteDir, uploadFile.FileName))
-		result, err := c.preCreate(uploadFile.LocalPath, uploadFile.RemoteDir)
+		result, err := c.preCreate(uploadFile.LocalPath, uploadFile.RemoteDir, opts)
 		if err != nil {
 			return err
 		}
