@@ -1,8 +1,11 @@
-package cmd
+package commands
 
 import (
 	"context"
 	"os"
+
+	"tbc/internal/terabox"
+	"tbc/internal/util"
 
 	"github.com/urfave/cli/v3"
 )
@@ -15,7 +18,7 @@ const (
 var app = &cli.Command{
 	Name:    CliName,
 	Authors: []any{"SHA-5010"},
-	Usage:   "TeraBox CLI client",
+	Usage:   "TeraBox CLI client\n   Run without arguments to enter interactive mode.",
 	CommandNotFound: func(ctx context.Context, c *cli.Command, s string) {
 		cli.ShowAppHelpAndExit(c, 3)
 	},
@@ -43,4 +46,12 @@ var app = &cli.Command{
 
 func Execute() error {
 	return app.Run(context.Background(), os.Args)
+}
+
+func setupClient(cmd *cli.Command) (*terabox.Client, error) {
+	cookie, err := util.GetCookie(cmd.Root().String(CookieFileOptName))
+	if err != nil {
+		return nil, err
+	}
+	return terabox.NewClient(cookie, nil)
 }

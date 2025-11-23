@@ -1,9 +1,8 @@
-package cmd
+package commands
 
 import (
 	"context"
 	"fmt"
-	"tbc/internal/runner"
 	"tbc/internal/terabox"
 	"tbc/internal/util"
 
@@ -14,8 +13,8 @@ const getCmdName = "get"
 
 var getCmd = &cli.Command{
 	Name:      getCmdName,
-	Usage:     "Download files or directories from TeraBox",
-	UsageText: fmt.Sprintf("%s %s FILE...", CliName, getCmdName),
+	Usage:     "Download file from TeraBox",
+	UsageText: fmt.Sprintf("%s %s FILE", CliName, getCmdName),
 	Action:    getAction,
 	Flags: []cli.Flag{
 		&cli.StringFlag{
@@ -40,13 +39,10 @@ var getCmd = &cli.Command{
 		&cli.StringFlag{
 			Name:    "chunk-size",
 			Aliases: []string{"s"},
-			Usage:   "Split size (1M = 1048576, 1G = 1073741824)",
+			Usage:   "Split size (1k = 1024, 1M = 1048576)",
 			Value:   "50M",
 			Validator: func(arg string) error {
-				size, err := util.ParseChunkSize(arg)
-				if size < 1024*1024 {
-					return fmt.Errorf("Split size must be greater than 1M")
-				}
+				_, err := util.ParseChunkSize(arg)
 				return err
 			},
 		},
@@ -60,23 +56,24 @@ func getAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("Invalid arguments")
 	}
 
-	cookie, err := util.GetCookie(cmd.Root().String(CookieFileOptName))
-	if err != nil {
-		return err
-	}
-
 	// Create TeraBox client
-	client, err := terabox.NewClient(cookie)
+	client, err := setupClient(cmd)
 	if err != nil {
 		return err
 	}
 
-	destDir := cmd.String("destination")
 	chunkSize, _ := util.ParseChunkSize(cmd.String("chunk-size"))
 	opts := terabox.DownloadOptions{
 		DownloadChunkSize: chunkSize,
 		MaxConcurrency:    cmd.Int("split"),
 	}
+	remotePath := cmd.Args().First()
 
-	return runner.Download(ctx, client, cmd.Args().Slice(), destDir, &opts)
+	err = client.Download(ctx, []terabox.DownloadFile{
+		{
+			RemotePath: remotePath,
+			LocalDir:   cmd.String("destination"),
+		},
+	}, nil, &opts)
+	return err
 }

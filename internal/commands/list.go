@@ -1,4 +1,4 @@
-package cmd
+package commands
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"tbc/internal/formatter"
 	"tbc/internal/runner"
 	"tbc/internal/terabox"
-	"tbc/internal/util"
 
 	"github.com/urfave/cli/v3"
 )
@@ -137,13 +136,8 @@ func listAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	rev := cmd.Bool("reverse")
 
-	cookie, err := util.GetCookie(cmd.Root().String(CookieFileOptName))
-	if err != nil {
-		return err
-	}
-
 	// Create TeraBox client
-	client, err := terabox.NewClient(cookie)
+	client, err := setupClient(cmd)
 	if err != nil {
 		return err
 	}

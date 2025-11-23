@@ -1,9 +1,8 @@
-package cmd
+package commands
 
 import (
 	"context"
 	"fmt"
-	"tbc/internal/terabox"
 	"tbc/internal/util"
 
 	"github.com/urfave/cli/v3"
@@ -34,13 +33,8 @@ var dfCmd = &cli.Command{
 }
 
 func dfAction(ctx context.Context, cmd *cli.Command) error {
-	cookie, err := util.GetCookie(cmd.Root().String(CookieFileOptName))
-	if err != nil {
-		return err
-	}
-
 	// Create TeraBox client
-	client, err := terabox.NewClient(cookie)
+	client, err := setupClient(cmd)
 	if err != nil {
 		return err
 	}

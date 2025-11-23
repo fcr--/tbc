@@ -1,4 +1,4 @@
-package cmd
+package commands
 
 import (
 	"context"
@@ -43,10 +43,7 @@ var putCmd = &cli.Command{
 			Usage:   "Split size (1k = 1024, 1M = 1048576)",
 			Value:   "50M",
 			Validator: func(arg string) error {
-				size, err := util.ParseChunkSize(arg)
-				if size < 1024*1024 {
-					return fmt.Errorf("Split size must be greater than 1M")
-				}
+				_, err := util.ParseChunkSize(arg)
 				return err
 			},
 		},
@@ -60,13 +57,8 @@ func putAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("Invalid arguments")
 	}
 
-	cookie, err := util.GetCookie(cmd.Root().String(CookieFileOptName))
-	if err != nil {
-		return err
-	}
-
 	// Create TeraBox client
-	client, err := terabox.NewClient(cookie)
+	client, err := setupClient(cmd)
 	if err != nil {
 		return err
 	}

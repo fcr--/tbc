@@ -1,4 +1,4 @@
-package cmd
+package commands
 
 import (
 	"bufio"
@@ -8,7 +8,6 @@ import (
 	"strings"
 	"tbc/internal/runner"
 	"tbc/internal/terabox"
-	"tbc/internal/util"
 
 	"github.com/urfave/cli/v3"
 )
@@ -299,21 +298,6 @@ func findAction(_ context.Context, cmd *cli.Command) error {
 		fmt.Println(item.Path)
 	}
 	return nil
-}
-
-func setupClient(cmd *cli.Command) (*terabox.Client, error) {
-	cookie, err := util.GetCookie(cmd.Root().String(CookieFileOptName))
-	if err != nil {
-		return nil, err
-	}
-
-	// Create TeraBox client
-	client, err := terabox.NewClient(cookie)
-	if err != nil {
-		return nil, err
-	}
-
-	return client, nil
 }
 
 func getTrueSources(ctx context.Context, client *terabox.Client, sources []string) []string {
